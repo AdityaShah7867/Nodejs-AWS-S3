@@ -87,18 +87,21 @@ app.post('/api/upload', upload, async (req, res) => {
   console.log('Upload route hit');
 
   const files = req.files;
-  if (!files || files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
+  const path = req.body.path; // Get the path from the request body
 
-  console.log(`Received ${files.length} files`);
+  if (!files || files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
+  if (!path) return res.status(400).json({ error: 'No path provided' });
+
+  console.log(`Received ${files.length} files for path: ${path}`);
 
   // Immediately respond to the frontend
-  res.status(202).json({ message: `${files.length} files received. Processing started.` });
+  res.status(202).json({ message: `${files.length} files received for path: ${path}. Processing started.` });
 
   // Process files in the background
-  processFiles(files).catch(error => console.error('Error in background processing:', error));
+  processFiles(files, path).catch(error => console.error('Error in background processing:', error));
 });
 
-async function processFiles(files) {
+async function processFiles(files, folderPath) {
   const uploadResults = [];
 
   for (const file of files) {
@@ -107,7 +110,9 @@ async function processFiles(files) {
 
       const attachmentId = Date.now().toString();
       const limitedFileName = path.parse(file.originalname).name.slice(0, 20) + path.extname(file.originalname);
-      const s3Key = `documents/${attachmentId}_${limitedFileName}`;
+      
+      // Use the provided folderPath
+      const s3Key = `${folderPath}/documents/${attachmentId}_${limitedFileName}`;
 
       // Upload to S3
       const s3Params = {
