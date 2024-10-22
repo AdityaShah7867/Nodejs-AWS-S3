@@ -25,7 +25,7 @@ const s3 = new AWS.S3({
 });
 
 // Multer configuration for file upload
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ dest: 'uploads/' }).array('files', 10); // Allow up to 10 files
 
 // MongoDB schemas
 const DocumentSchema = new mongoose.Schema({
@@ -83,45 +83,43 @@ app.post('/api/groups/:groupId/items', async (req, res) => {
 });
 
 // New middleware route for file upload
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', upload, async (req, res) => {
   console.log('Upload route hit');
 
-  try {
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const files = req.files;
+  if (!files || files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
 
-    console.log('File details:', {
-      originalname: file.originalname,
-      size: file.size,
-      mimetype: file.mimetype,
-    });
+  console.log(`Received ${files.length} files`);
 
-    // Generate AttachmentID
-    const attachmentId = Date.now().toString();
+  // Immediately respond to the frontend
+  res.status(202).json({ message: `${files.length} files received. Processing started.` });
 
-    // Limit filename to 20 characters
-    const limitedFileName = path.parse(file.originalname).name.slice(0, 20) + path.extname(file.originalname);
+  // Process files in the background
+  processFiles(files).catch(error => console.error('Error in background processing:', error));
+});
 
-    // Start uploading to S3
-    const s3Key = `documents/${attachmentId}_${limitedFileName}`;
-    const s3Params = {
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: s3Key,
-      Body: require('fs').createReadStream(file.path),
-    };
+async function processFiles(files) {
+  const uploadResults = [];
 
-    console.log('Uploading to S3 with parameters:', );
+  for (const file of files) {
+    try {
+      console.log('Processing file:', file.originalname);
 
-    s3.upload(s3Params, async (err, data) => {
-      if (err) {
-        console.error('Error uploading to S3:', );
-        return res.status(500).json({ error: 'Error uploading to S3' });
-      }
+      const attachmentId = Date.now().toString();
+      const limitedFileName = path.parse(file.originalname).name.slice(0, 20) + path.extname(file.originalname);
+      const s3Key = `documents/${attachmentId}_${limitedFileName}`;
 
-      // Construct the S3 URL
+      // Upload to S3
+      const s3Params = {
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: s3Key,
+        Body: require('fs').createReadStream(file.path),
+      };
+
+      const data = await s3.upload(s3Params).promise();
       const s3Url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
-      console.log('S3 URL:', s3Url);
-      // Prepare data for API call
+
+      // Prepare and send data to external API
       const apiData = {
         AttachmentDetailID: "0",
         AttachmentID: attachmentId,
@@ -136,44 +134,44 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         ChangedBy: "1"
       };
 
-      // Call external API using Axios
-      try {
-        const apiResponse = await axios.post('https://api.abcditsolutions.com/AMSAPI/', 
-          {
-            actionname: "AttachmentDetailSave",
-            jsondata: JSON.stringify(apiData),
-            multipletable: false
-          },
-          {
-            headers: {
-              'access_token': 'KSDISLRERFMFSOT123323DSF3444FS123456SDFSSFF'
-            }
+      const apiResponse = await axios.post('https://api.abcditsolutions.com/AMSAPI/', 
+        {
+          actionname: "AttachmentDetailSave",
+          jsondata: JSON.stringify(apiData),
+          multipletable: false
+        },
+        {
+          headers: {
+            'access_token': 'KSDISLRERFMFSOT123323DSF3444FS123456SDFSSFF'
           }
-        );
+        }
+      );
 
-        console.log('API response:', apiResponse.data);
+      console.log('API response:', apiResponse.data);
 
-        // Clean up the local file
-        require('fs').unlinkSync(file.path);
-        console.log('Local file deleted');
+      // Clean up the local file
+      require('fs').unlinkSync(file.path);
+      console.log('Local file deleted:', file.originalname);
 
-        // Send success response
-        res.status(200).json({ 
-          message: 'File uploaded successfully', 
-          s3Url: s3Url, 
-          apiResponse: apiResponse.data 
-        });
+      uploadResults.push({
+        originalName: file.originalname,
+        s3Url: s3Url,
+        apiResponse: apiResponse.data
+      });
 
-      } catch (apiError) {
-        console.error('Error calling external API:', apiError);
-        res.status(500).json({ error: 'Error calling external API' });
-      }
-    });
-  } catch (error) {
-    console.error('Error in upload route:', error);
-    res.status(400).json({ error: error.message });
+    } catch (error) {
+      console.error('Error processing file:', file.originalname, error);
+      uploadResults.push({
+        originalName: file.originalname,
+        error: error.message
+      });
+    }
   }
-});
+
+  console.log('All files processed. Results:', uploadResults);
+  // Here you could implement additional logic to notify the frontend of completion,
+  // such as websockets, server-sent events, or updating a status in a database
+}
 
 // Get all checklist groups
 app.get('/api/groups', async (req, res) => {
